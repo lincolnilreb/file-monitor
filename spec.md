@@ -1,0 +1,457 @@
+# File Monitor Specification
+
+## 1. Purpose
+
+File Monitor is a lightweight Python terminal application for monthly inbound feed visibility. It checks configured folders for required files before downstream ETL jobs begin, records when each feed first becomes ready, and gives operators a continuously refreshed dashboard.
+
+The application provides operational visibility only. It does not schedule, trigger, or orchestrate ETL jobs.
+
+## 2. Runtime Requirements
+
+- Python 3.12 or newer.
+- Windows and macOS compatible.
+- No database.
+- No web framework.
+- No required third-party packages.
+- Optional Windows toast dependency: `winotify`.
+- File detection must use `pathlib.Path`; do not use the standalone `glob` module.
+
+## 3. Project Layout
+
+```text
+file-monitor/
+├── main.py
+├── config.json
+├── requirements.txt
+├── README.md
+├── spec.md
+├── core/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── dashboard.py
+│   ├── monitor.py
+│   ├── notifier.py
+│   ├── state.py
+│   └── utils.py
+├── state/
+│   └── state_YYYYMM.json
+├── logs/
+│   └── monitor.log
+└── tests/
+    ├── test_core.py
+    ├── folder_001/
+    └── folder_002/
+```
+
+## 4. Entry Point
+
+`main.py` imports and calls `core.monitor.run_monitor()`.
+
+Run:
+
+```bash
+python3 main.py
+```
+
+## 5. Configuration File
+
+The application reads `config.json` from the project root.
+
+The file is JSON with top-level `//` comment-line support. Comments are allowed only as whole lines beginning with `//` after optional whitespace. Inline comments are not supported.
+
+`core.config.load_config()` strips these comment lines before parsing with `json.loads()`.
+
+Required runtime fields:
+
+```json
+{
+  "check_interval_seconds": 300,
+  "business_date": "AUTO",
+  "date_rule": "LAST_DAY_PREVIOUS_MONTH",
+  "feeds": [
+    {
+      "name": "Customer",
+      "source": "EDW",
+      "path": "\\\\server\\share\\feed",
+      "filename": "customer_{yyyymmdd}.csv"
+    }
+  ]
+}
+```
+
+### 5.1 `check_interval_seconds`
+
+Positive integer.
+
+Controls how long the monitor sleeps between cycles.
+
+Examples:
+
+- `10`: local testing.
+- `300`: 5-minute production polling.
+
+### 5.2 `business_date`
+
+String.
+
+Supported values:
+
+- `"AUTO"`: calculate from today's date and `date_rule`.
+- `"YYYY-MM-DD"`: manual date, for example `"2026-07-31"`.
+
+Manual mode must use hyphen format: `YYYY-MM-DD`.
+
+### 5.3 `date_rule`
+
+String.
+
+Used only when `business_date` is `"AUTO"`.
+
+Supported values:
+
+- `"LAST_DAY_PREVIOUS_MONTH"`: use the final calendar day of the previous month.
+- `"SAME_DAY_PREVIOUS_MONTH"`: use the same day number in the previous month; if the previous month is shorter, use that month’s final day.
+
+Examples:
+
+| Today | Rule | Business Date |
+| --- | --- | --- |
+| 2026-08-05 | LAST_DAY_PREVIOUS_MONTH | 2026-07-31 |
+| 2026-09-03 | LAST_DAY_PREVIOUS_MONTH | 2026-08-31 |
+| 2026-03-31 | SAME_DAY_PREVIOUS_MONTH | 2026-02-28 |
+
+### 5.4 `feeds`
+
+Non-empty list.
+
+Dashboard order must follow this list order.
+
+Each feed requires:
+
+- `name`: unique operator-friendly feed name. Used as the state key and notification feed name.
+- `source`: source system or folder label shown on the dashboard.
+- `path`: folder containing the inbound file. Use absolute paths in production. Windows UNC paths such as `"\\\\server\\share\\feed"` are supported.
+- `filename`: fixed filename or filename template with date tokens.
+
+Feed names must be unique. Duplicate names are invalid because state is keyed by feed name.
+
+Extra fields are ignored by the current parser.
+
+## 6. Filename Templates
+
+Filenames may be fixed strings or templates containing date tokens.
+
+Supported tokens:
+
+| Token | Example for 2026-07-31 |
+| --- | --- |
+| `{yyyy}` | `2026` |
+| `{yy}` | `26` |
+| `{mm}` | `07` |
+| `{dd}` | `31` |
+| `{yyyymm}` | `202607` |
+| `{yyyymmdd}` | `20260731` |
+| `{yyyy-mm-dd}` | `2026-07-31` |
+| `{yyyy_mm_dd}` | `2026_07_31` |
+
+Examples when business date is `2026-07-31`:
+
+| Template | Resolved filename |
+| --- | --- |
+| `payment_recon.txt` | `payment_recon.txt` |
+| `customer_{yyyymmdd}.csv` | `customer_20260731.csv` |
+| `{yyyy}.{mm}_customer_daily.txt` | `2026.07_customer_daily.txt` |
+| `orders_{yyyy-mm-dd}.xlsx` | `orders_2026-07-31.xlsx` |
+| `positions_{yyyy_mm_dd}.txt` | `positions_2026_07_31.txt` |
+
+## 7. Monitoring Flow
+
+Startup:
+
+1. Create `logs/` if needed.
+2. Configure logging to `logs/monitor.log`.
+3. Load `config.json`.
+4. Resolve the business date.
+5. Compute the monthly state path: `state/state_YYYYMM.json`.
+6. Load existing monthly state if present.
+7. Initialize missing feed state entries as `Waiting`.
+8. Save initialized state immediately so a fresh month has a state file even before files arrive.
+
+Each monitoring cycle:
+
+1. Log `Refresh`.
+2. Scan only feeds whose state is not `Ready`.
+3. For each waiting feed, resolve the expected filename from the business date.
+4. Check the candidate file with `pathlib.Path`.
+5. Validate file stability.
+6. If ready, set status to `Ready`, set matched filename, preserve or set ready time, send notification if not already sent, and mark notification as sent.
+7. Save state if any feed changed.
+8. Render the dashboard once with the latest state.
+9. If all feeds are ready, print `All feeds are ready.` and exit.
+10. Otherwise sleep `check_interval_seconds`.
+
+Keyboard interrupt:
+
+1. Save current state.
+2. Log shutdown.
+3. Print `Stopped by operator.`
+
+## 8. File Detection
+
+For each waiting feed:
+
+1. Resolve `filename` using business date tokens.
+2. Build candidate path as `feed.path / resolved_filename`.
+3. Check that `feed.path` exists and is a directory.
+4. Check that candidate exists.
+5. Check that candidate is a file.
+
+Only `pathlib.Path` APIs should be used for filesystem detection, including:
+
+- `Path.exists()`
+- `Path.is_dir()`
+- `Path.is_file()`
+- `Path.stat()`
+
+Missing directories, permission errors, and OS errors are logged as warnings and do not stop the application.
+
+## 9. File Stability
+
+Before marking a file ready:
+
+1. Read `candidate.stat().st_size`.
+2. Wait 2 seconds.
+3. Read `candidate.stat().st_size` again.
+4. If sizes match, the file is ready.
+5. If sizes differ, keep the feed waiting and log that the file is still changing.
+
+This avoids marking partially copied files as ready.
+
+## 10. State File
+
+State is stored as one JSON file per business month:
+
+```text
+state/state_YYYYMM.json
+```
+
+Example for business date `2026-07-31`:
+
+```text
+state/state_202607.json
+```
+
+State shape:
+
+```json
+{
+  "Customer": {
+    "status": "Ready",
+    "matched_file": "customer_20260731.csv",
+    "ready_time": "2026/08/04 08:15:22",
+    "notification_sent": true
+  }
+}
+```
+
+Default feed state:
+
+```json
+{
+  "status": "Waiting",
+  "matched_file": null,
+  "ready_time": null,
+  "notification_sent": false
+}
+```
+
+Rules:
+
+- State keys are feed names.
+- Missing feed states are added on startup.
+- Existing ready state is reused on restart.
+- Ready time is written once only and must not be overwritten.
+- Completed feeds are skipped in future scans.
+- New business month creates a new state file.
+- State writes are atomic: write to `.tmp`, then replace the target state file.
+
+## 11. Dashboard
+
+The dashboard redraws in place instead of printing a new dashboard below the previous one.
+
+Rendering uses ANSI clear-screen/home sequence:
+
+```text
+\033[2J\033[H
+```
+
+The dashboard is rendered once per monitoring cycle after scanning, so it always shows the latest state for that cycle.
+
+Header layout:
+
+```text
+╔════════════════════════════════════════════════════════════════════════════╗
+║                            Monthly Feed Monitor                           ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║Business Date : 2026/07/31        Refresh : 2026/08/04 09:35:00           ║
+║Interval      : 5 minutes                                  State   : Monitoring║
+║Progress      : ███████████░░░░░░░░░░░ 1 / 2 (50%)                         ║
+╚════════════════════════════════════════════════════════════════════════════╝
+```
+
+Current implementation constants:
+
+- Box width: `78`.
+- Inner width: `76`.
+- Progress bar width: `22`.
+- Ready icon: `✔`.
+- Waiting icon: `x`.
+
+Sections:
+
+- `READY`
+- `WAITING`
+
+Ready rows show:
+
+- `✔ Feed Name`
+- Source
+- Actual matched filename
+- Ready time
+
+Waiting rows show:
+
+- `x Feed Name`
+- Source
+- Expected resolved filename
+
+Footer shows:
+
+```text
+Ready: N | Waiting: M | Completion: P%
+```
+
+## 12. Notifications
+
+Notifications are sent only once per feed, when a feed first becomes ready.
+
+Notification content:
+
+- Title: `Inbound feed ready`
+- Message: `{feed_name} ready at {ready_time}`
+
+Behavior:
+
+- On non-Windows systems, notifications are logged only.
+- On Windows, `winotify` is imported lazily.
+- If `winotify` is missing, the app logs a warning and continues.
+- If toast creation fails, the app logs the exception and continues.
+
+`requirements.txt` must not require `winotify`; it is optional.
+
+## 13. Logging
+
+Log path:
+
+```text
+logs/monitor.log
+```
+
+Logged events:
+
+- Startup
+- Refresh
+- Ready
+- Missing directory warnings
+- Permission denied warnings
+- OS/file access warnings
+- File still changing
+- Notification skipped or failed
+- Startup errors
+- Shutdown after all feeds ready
+- Shutdown by keyboard interrupt
+
+## 14. Error Handling
+
+Startup errors are fatal:
+
+- Missing config file.
+- Invalid config syntax after stripping comment lines.
+- Invalid config shape.
+- Invalid business date.
+- Invalid state JSON.
+
+Runtime scan errors are non-fatal:
+
+- Missing feed directory.
+- Permission denied.
+- File disappears or changes while checking.
+- Other `OSError` from filesystem checks.
+- Notification errors.
+
+Keyboard interrupt is handled cleanly and saves current state.
+
+## 15. Test Fixtures
+
+The local test config currently monitors 12 files across two test folders:
+
+`tests/folder_001`:
+
+- `2026.07_customer_daily.txt`
+- `account_snapshot_20260731.txt`
+- `payment_recon.txt`
+- `risk_flags.txt`
+- `merchant_notes.txt`
+- `customer_extract.xlsx`
+- `monthly_summary.xlsx`
+
+`tests/folder_002`:
+
+- `transactions.csv`
+- `refunds.csv`
+- `audit_log.txt`
+- `control_total.txt`
+- `load_notes.txt`
+
+If `business_date` is `AUTO` and today's date resolves to a different month, tokenized fixture filenames must be regenerated or `business_date` should be set manually to `2026-07-31` for fixture testing.
+
+## 16. Validation Commands
+
+Run unit tests:
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+Compile all Python files:
+
+```bash
+python3 -m py_compile main.py core/config.py core/dashboard.py core/monitor.py core/notifier.py core/state.py core/utils.py tests/test_core.py
+```
+
+Confirm the real config loads:
+
+```bash
+python3 -c "from pathlib import Path; from core.config import load_config; c=load_config(Path('config.json')); print(len(c.feeds), c.check_interval_seconds, c.business_date, c.date_rule)"
+```
+
+Expected output for the current config:
+
+```text
+12 10 AUTO LAST_DAY_PREVIOUS_MONTH
+```
+
+Do not use `python3 -m json.tool config.json` for this project config because the file intentionally supports top-level `//` comment lines.
+
+## 17. Success Criteria
+
+- Adding feeds requires only `config.json` changes.
+- First ready time is never overwritten after being set.
+- Notification is sent once per feed.
+- Completed feeds are skipped on later cycles and after restart.
+- Dashboard renders once per cycle and redraws in place.
+- Dashboard remains readable with 50 or more feeds.
+- Monthly state file is created on startup.
+- New business month starts a separate state file.
+- Runtime scan errors do not stop monitoring.
+- The app remains dependency-light and maintainable.

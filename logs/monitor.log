@@ -1,0 +1,27 @@
+2026-08-05 00:14:29,374 INFO Startup
+2026-08-05 00:14:29,375 INFO Refresh
+2026-08-05 00:14:29,375 INFO Shutdown: all feeds ready
+2026-08-05 00:25:04,504 INFO Startup
+2026-08-05 00:25:04,504 INFO Refresh
+2026-08-05 00:25:04,504 INFO Shutdown: all feeds ready
+2026-08-05 00:29:00,687 INFO Startup
+2026-08-05 00:29:00,688 INFO Refresh
+2026-08-05 00:29:00,688 INFO Shutdown: all feeds ready
+2026-08-05 00:29:00,689 INFO Startup
+2026-08-05 00:29:00,689 INFO Refresh
+2026-08-05 00:29:00,689 WARNING Feed directory is missing: missing
+2026-08-05 00:29:00,690 INFO Shutdown: keyboard interrupt
+2026-08-05 00:29:22,726 INFO Startup
+2026-08-05 00:29:22,726 INFO Refresh
+2026-08-05 00:29:22,727 INFO Shutdown: all feeds ready
+2026-08-05 00:29:22,727 INFO Startup
+2026-08-05 00:29:22,727 INFO Refresh
+2026-08-05 00:29:22,728 WARNING Feed directory is missing: missing
+2026-08-05 00:29:22,728 INFO Shutdown: keyboard interrupt
+2026-08-05 00:29:36,258 INFO Startup
+2026-08-05 00:29:36,258 INFO Refresh
+2026-08-05 00:29:36,259 INFO Shutdown: all feeds ready
+2026-08-05 00:29:36,259 INFO Startup
+2026-08-05 00:29:36,259 INFO Refresh
+2026-08-05 00:29:36,260 WARNING Feed directory is missing: missing
+2026-08-05 00:29:36,261 INFO Shutdown: keyboard interrupt

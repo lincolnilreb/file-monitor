@@ -1,0 +1,5 @@
+# No required third-party packages.
+# The application runs on Python 3.12+ using only the standard library.
+#
+# Optional on Windows for toast notifications:
+# winotify
