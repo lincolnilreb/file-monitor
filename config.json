@@ -25,12 +25,12 @@
 //   Each feed requires:
 //     name     = unique operator-friendly feed name
 //     source   = source system or folder label shown on the dashboard
-//     path     = folder containing the inbound file
+//     path     = folder containing the inbound file; date tokens are supported
 //                Use absolute paths for production.
 //                Windows UNC example: "\\server\\share\\feed"
 //     filename = exact filename or filename template with date tokens
 //
-// filename date tokens:
+// path and filename date tokens:
 //   {yyyy}       -> 2026
 //   {yy}         -> 26
 //   {mm}         -> 07
@@ -39,6 +39,11 @@
 //   {yyyymmdd}   -> 20260731
 //   {yyyy-mm-dd} -> 2026-07-31
 //   {yyyy_mm_dd} -> 2026_07_31
+//
+// path examples when business_date is 2026-07-31:
+//   "/feeds/{yyyymm}"               -> /feeds/202607
+//   "/feeds/{yyyy}/{mm}"            -> /feeds/2026/07
+//   "\\server\\feed\\{yyyymmdd}"    -> \\server\\feed\\20260731
 //
 // filename examples when business_date is 2026-07-31:
 //   "payment_recon.txt"              -> payment_recon.txt

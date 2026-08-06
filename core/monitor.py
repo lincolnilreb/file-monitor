@@ -86,12 +86,13 @@ def scan_waiting_feeds(config: AppConfig, state: State, business_date: date) -> 
 
 
 def find_ready_file(feed: FeedConfig, business_date: date) -> Path | None:
+    feed_path = Path(render_filename_template(str(feed.path), business_date))
     filename = render_filename_template(feed.filename, business_date)
-    candidate = feed.path / filename
+    candidate = feed_path / filename
 
     try:
-        if not feed.path.exists() or not feed.path.is_dir():
-            logging.warning("Feed directory is missing: %s", feed.path)
+        if not feed_path.exists() or not feed_path.is_dir():
+            logging.warning("Feed directory is missing: %s", feed_path)
             return None
 
         if not candidate.exists() or not candidate.is_file():

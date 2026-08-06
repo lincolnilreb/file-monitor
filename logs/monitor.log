@@ -25,3 +25,10 @@
 2026-08-05 00:29:36,259 INFO Refresh
 2026-08-05 00:29:36,260 WARNING Feed directory is missing: missing
 2026-08-05 00:29:36,261 INFO Shutdown: keyboard interrupt
+2026-08-05 19:28:32,175 INFO Startup
+2026-08-05 19:28:32,175 INFO Refresh
+2026-08-05 19:28:32,175 INFO Shutdown: all feeds ready
+2026-08-05 19:28:32,176 INFO Startup
+2026-08-05 19:28:32,176 INFO Refresh
+2026-08-05 19:28:32,177 WARNING Feed directory is missing: missing
+2026-08-05 19:28:32,177 INFO Shutdown: keyboard interrupt

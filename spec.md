@@ -72,7 +72,7 @@ Required runtime fields:
     {
       "name": "Customer",
       "source": "EDW",
-      "path": "\\\\server\\share\\feed",
+      "path": "\\\\server\\share\\{yyyymm}",
       "filename": "customer_{yyyymmdd}.csv"
     }
   ]
@@ -130,16 +130,16 @@ Each feed requires:
 
 - `name`: unique operator-friendly feed name. Used as the state key and notification feed name.
 - `source`: source system or folder label shown on the dashboard.
-- `path`: folder containing the inbound file. Use absolute paths in production. Windows UNC paths such as `"\\\\server\\share\\feed"` are supported.
+- `path`: folder containing the inbound file. Fixed paths and date-token path templates are supported. Use absolute paths in production. Windows UNC paths such as `"\\\\server\\share\\{yyyymm}"` are supported.
 - `filename`: fixed filename or filename template with date tokens.
 
 Feed names must be unique. Duplicate names are invalid because state is keyed by feed name.
 
 Extra fields are ignored by the current parser.
 
-## 6. Filename Templates
+## 6. Date Templates
 
-Filenames may be fixed strings or templates containing date tokens.
+Feed paths and filenames may be fixed strings or templates containing date tokens.
 
 Supported tokens:
 
@@ -154,7 +154,16 @@ Supported tokens:
 | `{yyyy-mm-dd}` | `2026-07-31` |
 | `{yyyy_mm_dd}` | `2026_07_31` |
 
-Examples when business date is `2026-07-31`:
+Path examples when business date is `2026-07-31`:
+
+| Template | Resolved path |
+| --- | --- |
+| `/feeds/inbound` | `/feeds/inbound` |
+| `/feeds/{yyyymm}` | `/feeds/202607` |
+| `/feeds/{yyyy}/{mm}` | `/feeds/2026/07` |
+| `\\\\server\\share\\{yyyymmdd}` | `\\\\server\\share\\20260731` |
+
+Filename examples when business date is `2026-07-31`:
 
 | Template | Resolved filename |
 | --- | --- |
@@ -181,7 +190,7 @@ Each monitoring cycle:
 
 1. Log `Refresh`.
 2. Scan only feeds whose state is not `Ready`.
-3. For each waiting feed, resolve the expected filename from the business date.
+3. For each waiting feed, resolve the feed path and expected filename from the business date.
 4. Check the candidate file with `pathlib.Path`.
 5. Validate file stability.
 6. If ready, set status to `Ready`, set matched filename, preserve or set ready time, send notification if not already sent, and mark notification as sent.
@@ -200,11 +209,12 @@ Keyboard interrupt:
 
 For each waiting feed:
 
-1. Resolve `filename` using business date tokens.
-2. Build candidate path as `feed.path / resolved_filename`.
-3. Check that `feed.path` exists and is a directory.
-4. Check that candidate exists.
-5. Check that candidate is a file.
+1. Resolve `path` using business date tokens.
+2. Resolve `filename` using business date tokens.
+3. Build candidate path as `resolved_path / resolved_filename`.
+4. Check that resolved path exists and is a directory.
+5. Check that candidate exists.
+6. Check that candidate is a file.
 
 Only `pathlib.Path` APIs should be used for filesystem detection, including:
 

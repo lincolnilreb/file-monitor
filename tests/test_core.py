@@ -102,6 +102,25 @@ class FileDetectionTests(unittest.TestCase):
 
         self.assertEqual(matched, file_path)
 
+    def test_find_ready_file_resolves_date_tokens_in_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feed_dir = root / "202607"
+            feed_dir.mkdir()
+            file_path = feed_dir / "customer.csv"
+            file_path.write_text("ready", encoding="utf-8")
+            feed = FeedConfig(
+                name="Customer",
+                source="EDW",
+                path=Path(str(root / "{yyyymm}")),
+                filename="customer.csv",
+            )
+
+            with patch("core.monitor.time.sleep", return_value=None):
+                matched = find_ready_file(feed, date(2026, 7, 31))
+
+        self.assertEqual(matched, file_path)
+
 
 class MonitorLoopTests(unittest.TestCase):
     def test_dashboard_renders_once_when_all_feeds_are_ready(self) -> None:
