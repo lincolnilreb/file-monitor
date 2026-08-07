@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -17,6 +18,12 @@ CONFIG_PATH = ROOT / "config.json"
 STATE_DIR = ROOT / "state"
 LOG_DIR = ROOT / "logs"
 LOG_PATH = LOG_DIR / "monitor.log"
+
+
+@dataclass(frozen=True)
+class ReadyFeed:
+    feed_name: str
+    matched_file: str
 
 
 def run_monitor() -> None:
@@ -42,8 +49,11 @@ def run_monitor() -> None:
     try:
         while True:
             logging.info("Refresh")
-            changed = scan_waiting_feeds(config, state, business_date)
+            ready_time = now_text()
+            ready_batch = collect_ready_batch(config, state, business_date)
+            changed = mark_ready_batch(state, ready_batch, ready_time)
             if changed:
+                notify_ready([item.matched_file for item in ready_batch], ready_time)
                 save_state(state_path, state)
 
             render_dashboard(config.feeds, state, business_date, config.check_interval_seconds)
@@ -60,27 +70,51 @@ def run_monitor() -> None:
         print("\nStopped by operator.")
 
 
-def scan_waiting_feeds(config: AppConfig, state: State, business_date: date) -> bool:
-    changed = False
-    for feed in config.feeds:
+def scan_ready_files(feeds: list[FeedConfig], state: State, business_date: date) -> list[ReadyFeed]:
+    """Return ready waiting feeds without mutating state or sending notifications."""
+    ready: list[ReadyFeed] = []
+    for feed in feeds:
         item = state[feed.name]
         if item.get("status") == "Ready":
             continue
 
         matched = find_ready_file(feed, business_date)
-        if matched is None:
+        if matched is not None:
+            ready.append(ReadyFeed(feed_name=feed.name, matched_file=matched.name))
+    return ready
+
+
+def collect_ready_batch(config: AppConfig, state: State, business_date: date) -> list[ReadyFeed]:
+    ready = scan_ready_files(config.feeds, state, business_date)
+    if not ready:
+        return []
+
+    if config.aggregation_window_seconds > 0:
+        time.sleep(config.aggregation_window_seconds)
+
+    seen = {item.feed_name for item in ready}
+    for item in scan_ready_files(config.feeds, state, business_date):
+        if item.feed_name not in seen:
+            ready.append(item)
+            seen.add(item.feed_name)
+
+    return sorted(ready, key=lambda item: item.matched_file)
+
+
+def mark_ready_batch(state: State, ready_batch: list[ReadyFeed], ready_time: str) -> bool:
+    changed = False
+    for ready in ready_batch:
+        item = state[ready.feed_name]
+        if item.get("status") == "Ready":
             continue
 
         item["status"] = "Ready"
-        item["matched_file"] = matched.name
+        item["matched_file"] = ready.matched_file
         if not item.get("ready_time"):
-            item["ready_time"] = now_text()
+            item["ready_time"] = ready_time
 
-        if not item.get("notification_sent"):
-            notify_ready(feed.name, item["ready_time"])
-            item["notification_sent"] = True
-
-        logging.info("Ready: %s (%s)", feed.name, matched)
+        item["notification_sent"] = True
+        logging.info("Ready: %s (%s)", ready.feed_name, ready.matched_file)
         changed = True
     return changed
 

@@ -17,6 +17,7 @@ class FeedConfig:
 @dataclass(frozen=True)
 class AppConfig:
     check_interval_seconds: int
+    aggregation_window_seconds: int
     business_date: str
     date_rule: str
     feeds: list[FeedConfig]
@@ -44,6 +45,10 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
     if not isinstance(interval, int) or interval <= 0:
         raise ValueError("check_interval_seconds must be a positive integer")
 
+    aggregation_window = raw.get("aggregation_window_seconds", 3)
+    if not isinstance(aggregation_window, int) or aggregation_window < 0:
+        raise ValueError("aggregation_window_seconds must be a non-negative integer")
+
     business_date = raw.get("business_date", "AUTO")
     if not isinstance(business_date, str):
         raise ValueError("business_date must be a string")
@@ -63,6 +68,7 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
 
     return AppConfig(
         check_interval_seconds=interval,
+        aggregation_window_seconds=aggregation_window,
         business_date=business_date,
         date_rule=date_rule,
         feeds=feeds,

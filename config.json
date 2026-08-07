@@ -6,6 +6,11 @@
 //     10  = every 10 seconds, useful for local testing
 //     300 = every 5 minutes, typical production setting
 //
+// aggregation_window_seconds:
+//   Non-negative integer. After the first ready feed is detected, wait this
+//   many seconds and collect other ready feeds into the same notification batch.
+//   Recommended default: 3.
+//
 // business_date:
 //   "AUTO"       = calculate the business date from today's date and date_rule
 //   "YYYY-MM-DD" = use a manual business date, for example "2026-07-31"
@@ -54,6 +59,7 @@
 // ---------------------------------------------------------------------------
 {
   "check_interval_seconds": 10,
+  "aggregation_window_seconds": 3,
   "business_date": "AUTO",
   "date_rule": "LAST_DAY_PREVIOUS_MONTH",
   "feeds": [

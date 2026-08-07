@@ -66,6 +66,7 @@ Required runtime fields:
 ```json
 {
   "check_interval_seconds": 300,
+  "aggregation_window_seconds": 3,
   "business_date": "AUTO",
   "date_rule": "LAST_DAY_PREVIOUS_MONTH",
   "feeds": [
@@ -90,7 +91,17 @@ Examples:
 - `10`: local testing.
 - `300`: 5-minute production polling.
 
-### 5.2 `business_date`
+### 5.2 `aggregation_window_seconds`
+
+Non-negative integer.
+
+After the first ready feed is detected in a cycle, the monitor waits this many seconds and scans again so feeds that arrive nearly at the same time can be included in the same notification batch.
+
+Recommended default: `3`.
+
+Use `0` to disable the additional aggregation wait.
+
+### 5.3 `business_date`
 
 String.
 
@@ -101,7 +112,7 @@ Supported values:
 
 Manual mode must use hyphen format: `YYYY-MM-DD`.
 
-### 5.3 `date_rule`
+### 5.4 `date_rule`
 
 String.
 
@@ -120,7 +131,7 @@ Examples:
 | 2026-09-03 | LAST_DAY_PREVIOUS_MONTH | 2026-08-31 |
 | 2026-03-31 | SAME_DAY_PREVIOUS_MONTH | 2026-02-28 |
 
-### 5.4 `feeds`
+### 5.5 `feeds`
 
 Non-empty list.
 
@@ -189,15 +200,21 @@ Startup:
 Each monitoring cycle:
 
 1. Log `Refresh`.
-2. Scan only feeds whose state is not `Ready`.
-3. For each waiting feed, resolve the feed path and expected filename from the business date.
-4. Check the candidate file with `pathlib.Path`.
-5. Validate file stability.
-6. If ready, set status to `Ready`, set matched filename, preserve or set ready time, send notification if not already sent, and mark notification as sent.
-7. Save state if any feed changed.
-8. Render the dashboard once with the latest state.
-9. If all feeds are ready, print `All feeds are ready.` and exit.
-10. Otherwise sleep `check_interval_seconds`.
+2. Capture one `ready_time` for this possible batch.
+3. Scan only feeds whose state is not `Ready`.
+4. If no feeds are ready, skip notification and render the dashboard.
+5. If at least one feed is ready, wait `aggregation_window_seconds`.
+6. Scan waiting feeds one more time and add newly ready feeds to the same batch.
+7. Sort the batch by matched filename for predictable notification output.
+8. Update all feeds in the batch with the same `ready_time`.
+9. Mark all feeds in the batch as `notification_sent`.
+10. Send one summary notification for the whole batch.
+11. Save state if any feed changed.
+12. Render the dashboard once with the latest state.
+13. If all feeds are ready, print `All feeds are ready.` and exit.
+14. Otherwise sleep `check_interval_seconds`.
+
+Scanning functions must not send notifications. Notification dispatch happens once after the batch has been collected and state has been updated.
 
 Keyboard interrupt:
 
@@ -343,15 +360,57 @@ Ready: N | Waiting: M | Completion: P%
 
 ## 12. Notifications
 
-Notifications are sent only once per feed, when a feed first becomes ready.
+Notifications are sent once per ready batch, not once per file.
 
-Notification content:
+Batch notification functions:
 
-- Title: `Inbound feed ready`
-- Message: `{feed_name} ready at {ready_time}`
+- `scan_ready_files(...) -> list[ReadyFeed]`: scans waiting feeds only and does not mutate state or notify.
+- `collect_ready_batch(...) -> list[ReadyFeed]`: handles the aggregation window and returns one sorted batch.
+- `mark_ready_batch(...) -> bool`: applies one shared ready time to the whole batch and marks notification state.
+- `build_ready_notification(feed_names, ready_time) -> tuple[str, str]`: builds testable notification text.
+- `notify_ready(feed_names, ready_time) -> None`: sends or logs the notification only.
+
+`Ready at` is the time when the system detected the batch as ready. It is not the exact file arrival time or the exact time the file finished writing.
+
+Notification titles must always include the file count:
+
+| Count | Title |
+| --- | --- |
+| 1 | `1 inbound feed ready` |
+| 2-4 | `N inbound feeds ready` |
+| 5+ | `N inbound feeds ready` |
+
+Notification messages:
+
+For 1 file:
+
+```text
+customer.csv
+
+Ready at 10:30:15
+```
+
+For 2 to 4 files, show sorted filenames separated by newlines:
+
+```text
+customer.csv
+orders.csv
+payments.csv
+
+Ready at 10:30:15
+```
+
+For 5 or more files, show the actual file count:
+
+```text
+8 files are ready
+
+Ready at 10:30:15
+```
 
 Behavior:
 
+- Empty feed-name lists must not send notifications.
 - On non-Windows systems, notifications are logged only.
 - On Windows, `winotify` is imported lazily.
 - If `winotify` is missing, the app logs a warning and continues.
@@ -442,13 +501,13 @@ python3 -m py_compile main.py core/config.py core/dashboard.py core/monitor.py c
 Confirm the real config loads:
 
 ```bash
-python3 -c "from pathlib import Path; from core.config import load_config; c=load_config(Path('config.json')); print(len(c.feeds), c.check_interval_seconds, c.business_date, c.date_rule)"
+python3 -c "from pathlib import Path; from core.config import load_config; c=load_config(Path('config.json')); print(len(c.feeds), c.check_interval_seconds, c.aggregation_window_seconds, c.business_date, c.date_rule)"
 ```
 
 Expected output for the current config:
 
 ```text
-12 10 AUTO LAST_DAY_PREVIOUS_MONTH
+12 10 3 AUTO LAST_DAY_PREVIOUS_MONTH
 ```
 
 Do not use `python3 -m json.tool config.json` for this project config because the file intentionally supports top-level `//` comment lines.
@@ -457,7 +516,9 @@ Do not use `python3 -m json.tool config.json` for this project config because th
 
 - Adding feeds requires only `config.json` changes.
 - First ready time is never overwritten after being set.
-- Notification is sent once per feed.
+- Notification is sent once per ready batch.
+- All feeds in the same ready batch use the exact same `ready_time`.
+- Feeds detected during the aggregation window are included in the same notification batch.
 - Completed feeds are skipped on later cycles and after restart.
 - Dashboard renders once per cycle and redraws in place.
 - Dashboard remains readable with 50 or more feeds.
