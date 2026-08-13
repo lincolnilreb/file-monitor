@@ -13,6 +13,7 @@ from core.monitor import (
     ReadyFeed,
     collect_ready_batch,
     find_ready_file,
+    list_directory_file_names,
     mark_ready_batch,
     run_monitor,
     scan_ready_files,
@@ -70,7 +71,34 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.check_interval_seconds, 10)
         self.assertEqual(config.aggregation_window_seconds, 3)
+        self.assertEqual(config.directory_listing_timeout_seconds, 5)
+        self.assertEqual(config.scan_strategy, "GROUPED_PER_FILE")
         self.assertEqual(config.feeds[0].filename, "customer_{yyyymmdd}.csv")
+
+    def test_load_config_rejects_invalid_scan_strategy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(
+                "\n".join(
+                    [
+                        "{",
+                        '  "scan_strategy": "BAD",',
+                        '  "feeds": [',
+                        "    {",
+                        '      "name": "Customer",',
+                        '      "source": "EDW",',
+                        '      "path": ".",',
+                        '      "filename": "customer.csv"',
+                        "    }",
+                        "  ]",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "scan_strategy"):
+                load_config(path)
 
 
 class StateTests(unittest.TestCase):
@@ -121,7 +149,8 @@ class FileDetectionTests(unittest.TestCase):
         state = {"Customer": default_feed_state()}
 
         with (
-            patch("core.monitor.find_ready_file", return_value=Path("customer.csv")),
+            patch("core.monitor.list_directory_file_names", return_value=None),
+            patch("core.monitor.find_ready_candidate", return_value=Path("customer.csv")),
             patch("core.monitor.notify_ready") as notify_mock,
         ):
             ready = scan_ready_files([feed], state, date(2026, 7, 31))
@@ -129,10 +158,129 @@ class FileDetectionTests(unittest.TestCase):
         self.assertEqual(ready, [ReadyFeed(feed_name="Customer", matched_file="customer.csv")])
         notify_mock.assert_not_called()
 
+    def test_scan_ready_files_reuses_directory_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            feed_dir = Path(tmp)
+            first_file = feed_dir / "customer.csv"
+            second_file = feed_dir / "orders.csv"
+            first_file.write_text("ready", encoding="utf-8")
+            second_file.write_text("ready", encoding="utf-8")
+            feeds = [
+                FeedConfig(name="Customer", source="EDW", path=feed_dir, filename="customer.csv"),
+                FeedConfig(name="Orders", source="EDW", path=feed_dir, filename="orders.csv"),
+            ]
+            state = {
+                "Customer": default_feed_state(),
+                "Orders": default_feed_state(),
+            }
+            original_is_dir = Path.is_dir
+
+            with (
+                patch("core.monitor.time.sleep", return_value=None),
+                patch.object(Path, "is_dir", autospec=True, side_effect=lambda path: original_is_dir(path)) as is_dir_mock,
+            ):
+                ready = scan_ready_files(feeds, state, date(2026, 7, 31))
+
+        self.assertEqual(len(ready), 2)
+        self.assertEqual(is_dir_mock.call_count, 1)
+
+    def test_grouped_per_file_is_default_scan_strategy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            feed_dir = Path(tmp)
+            (feed_dir / "customer.csv").write_text("ready", encoding="utf-8")
+            feeds = [FeedConfig(name="Customer", source="EDW", path=feed_dir, filename="customer.csv")]
+            state = {"Customer": default_feed_state()}
+
+            with (
+                patch("core.monitor.time.sleep", return_value=None),
+                patch("core.monitor.list_directory_file_names") as listing_mock,
+            ):
+                ready = scan_ready_files(feeds, state, date(2026, 7, 31))
+
+        self.assertEqual(ready, [ReadyFeed(feed_name="Customer", matched_file="customer.csv")])
+        listing_mock.assert_not_called()
+
+    def test_list_directory_scan_strategy_uses_directory_listing_for_folder_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            feed_dir = Path(tmp)
+            (feed_dir / "customer.csv").write_text("ready", encoding="utf-8")
+            feeds = [
+                FeedConfig(name="Customer", source="EDW", path=feed_dir, filename="customer.csv"),
+                FeedConfig(name="Orders", source="EDW", path=feed_dir, filename="orders.csv"),
+            ]
+            state = {
+                "Customer": default_feed_state(),
+                "Orders": default_feed_state(),
+            }
+
+            with (
+                patch("core.monitor.time.sleep", return_value=None),
+                patch("core.monitor.find_ready_file") as fallback_mock,
+            ):
+                ready = scan_ready_files(feeds, state, date(2026, 7, 31), scan_strategy="LIST_DIRECTORY")
+
+        self.assertEqual(ready, [ReadyFeed(feed_name="Customer", matched_file="customer.csv")])
+        fallback_mock.assert_not_called()
+
+    def test_list_directory_scan_strategy_does_not_fallback_when_directory_listing_times_out(self) -> None:
+        feed = FeedConfig(name="Customer", source="EDW", path=Path("."), filename="customer.csv")
+        state = {"Customer": default_feed_state()}
+
+        with (
+            patch("core.monitor.list_directory_file_names", return_value=None),
+            patch("core.monitor.find_ready_file") as fallback_mock,
+        ):
+            ready = scan_ready_files([feed], state, date(2026, 7, 31), scan_strategy="LIST_DIRECTORY")
+
+        self.assertEqual(ready, [])
+        fallback_mock.assert_not_called()
+
+    def test_auto_scan_strategy_falls_back_when_directory_listing_times_out(self) -> None:
+        feed = FeedConfig(name="Customer", source="EDW", path=Path("."), filename="customer.csv")
+        state = {"Customer": default_feed_state()}
+
+        with (
+            patch("core.monitor.list_directory_file_names", return_value=None),
+            patch("core.monitor.find_ready_candidate", return_value=Path("customer.csv")) as fallback_mock,
+        ):
+            ready = scan_ready_files([feed], state, date(2026, 7, 31), scan_strategy="AUTO")
+
+        self.assertEqual(ready, [ReadyFeed(feed_name="Customer", matched_file="customer.csv")])
+        fallback_mock.assert_called_once()
+
+    def test_list_directory_file_names_logs_success_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / "customer.csv").write_text("ready", encoding="utf-8")
+            (folder / "orders.csv").write_text("ready", encoding="utf-8")
+
+            with self.assertLogs(level="INFO") as logs:
+                names = list_directory_file_names(folder, timeout_seconds=5)
+
+        self.assertEqual(names, {"customer.csv", "orders.csv"})
+        self.assertTrue(any("Listed 2 files from" in message for message in logs.output))
+
+    def test_list_directory_file_names_logs_timeout_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / "customer.csv").write_text("ready", encoding="utf-8")
+
+            with (
+                patch("core.monitor.time.monotonic", side_effect=[0.0, 6.0]),
+                self.assertLogs(level="WARNING") as logs,
+            ):
+                names = list_directory_file_names(folder, timeout_seconds=5)
+
+        self.assertIsNone(names)
+        self.assertTrue(any("Directory listing timed out after 6.00s" in message for message in logs.output))
+        self.assertTrue(any("falling back to per-file checks" in message for message in logs.output))
+
     def test_collect_ready_batch_adds_files_seen_during_aggregation_window(self) -> None:
         config = AppConfig(
             check_interval_seconds=10,
             aggregation_window_seconds=3,
+            directory_listing_timeout_seconds=5,
+            scan_strategy="GROUPED_PER_FILE",
             business_date="2026-07-31",
             date_rule="LAST_DAY_PREVIOUS_MONTH",
             feeds=[],
@@ -159,10 +307,32 @@ class FileDetectionTests(unittest.TestCase):
         self.assertEqual(scan_mock.call_count, 2)
         sleep_mock.assert_called_once_with(3)
 
+    def test_collect_ready_batch_skips_first_scan_hits_during_second_scan(self) -> None:
+        config = AppConfig(
+            check_interval_seconds=10,
+            aggregation_window_seconds=3,
+            directory_listing_timeout_seconds=5,
+            scan_strategy="GROUPED_PER_FILE",
+            business_date="2026-07-31",
+            date_rule="LAST_DAY_PREVIOUS_MONTH",
+            feeds=[],
+        )
+        first_scan = [ReadyFeed(feed_name="Customer", matched_file="customer.csv")]
+
+        with (
+            patch("core.monitor.scan_ready_files", side_effect=[first_scan, []]) as scan_mock,
+            patch("core.monitor.time.sleep"),
+        ):
+            collect_ready_batch(config, {}, date(2026, 7, 31))
+
+        self.assertEqual(scan_mock.call_args_list[1].kwargs["skip_feed_names"], {"Customer"})
+
     def test_collect_ready_batch_skips_notification_window_when_no_files_are_ready(self) -> None:
         config = AppConfig(
             check_interval_seconds=10,
             aggregation_window_seconds=3,
+            directory_listing_timeout_seconds=5,
+            scan_strategy="GROUPED_PER_FILE",
             business_date="2026-07-31",
             date_rule="LAST_DAY_PREVIOUS_MONTH",
             feeds=[],
@@ -202,6 +372,8 @@ class MonitorLoopTests(unittest.TestCase):
         config = AppConfig(
             check_interval_seconds=10,
             aggregation_window_seconds=3,
+            directory_listing_timeout_seconds=5,
+            scan_strategy="GROUPED_PER_FILE",
             business_date="2026-07-31",
             date_rule="LAST_DAY_PREVIOUS_MONTH",
             feeds=[
@@ -238,6 +410,8 @@ class MonitorLoopTests(unittest.TestCase):
         config = AppConfig(
             check_interval_seconds=10,
             aggregation_window_seconds=3,
+            directory_listing_timeout_seconds=5,
+            scan_strategy="GROUPED_PER_FILE",
             business_date="2026-07-31",
             date_rule="LAST_DAY_PREVIOUS_MONTH",
             feeds=[
@@ -259,6 +433,7 @@ class MonitorLoopTests(unittest.TestCase):
             patch("core.monitor.render_dashboard"),
             patch("core.monitor.time.sleep", side_effect=KeyboardInterrupt),
             patch("sys.stdout", StringIO()),
+            self.assertLogs(level="WARNING"),
         ):
             run_monitor()
 
@@ -269,6 +444,8 @@ class MonitorLoopTests(unittest.TestCase):
         config = AppConfig(
             check_interval_seconds=10,
             aggregation_window_seconds=3,
+            directory_listing_timeout_seconds=5,
+            scan_strategy="GROUPED_PER_FILE",
             business_date="2026-07-31",
             date_rule="LAST_DAY_PREVIOUS_MONTH",
             feeds=[

@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+
+ScanStrategy = Literal["GROUPED_PER_FILE", "LIST_DIRECTORY", "AUTO"]
+SCAN_STRATEGIES = {"GROUPED_PER_FILE", "LIST_DIRECTORY", "AUTO"}
 
 
 @dataclass(frozen=True)
@@ -18,6 +22,8 @@ class FeedConfig:
 class AppConfig:
     check_interval_seconds: int
     aggregation_window_seconds: int
+    directory_listing_timeout_seconds: int
+    scan_strategy: ScanStrategy
     business_date: str
     date_rule: str
     feeds: list[FeedConfig]
@@ -49,6 +55,14 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
     if not isinstance(aggregation_window, int) or aggregation_window < 0:
         raise ValueError("aggregation_window_seconds must be a non-negative integer")
 
+    listing_timeout = raw.get("directory_listing_timeout_seconds", 5)
+    if not isinstance(listing_timeout, int) or listing_timeout <= 0:
+        raise ValueError("directory_listing_timeout_seconds must be a positive integer")
+
+    scan_strategy = raw.get("scan_strategy", "GROUPED_PER_FILE")
+    if scan_strategy not in SCAN_STRATEGIES:
+        raise ValueError("scan_strategy must be GROUPED_PER_FILE, LIST_DIRECTORY, or AUTO")
+
     business_date = raw.get("business_date", "AUTO")
     if not isinstance(business_date, str):
         raise ValueError("business_date must be a string")
@@ -69,6 +83,8 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
     return AppConfig(
         check_interval_seconds=interval,
         aggregation_window_seconds=aggregation_window,
+        directory_listing_timeout_seconds=listing_timeout,
+        scan_strategy=scan_strategy,
         business_date=business_date,
         date_rule=date_rule,
         feeds=feeds,

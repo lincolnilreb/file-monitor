@@ -11,6 +11,19 @@
 //   many seconds and collect other ready feeds into the same notification batch.
 //   Recommended default: 3.
 //
+// directory_listing_timeout_seconds:
+//   Positive integer. For each folder, the monitor first tries to list files
+//   once and match expected filenames in memory. If listing takes longer than
+//   this many seconds, it falls back to per-file checks for that folder.
+//   Recommended default: 5.
+//
+// scan_strategy:
+//   GROUPED_PER_FILE = group feeds by path, check each folder once, then check
+//                      each expected file with Path.is_file(). Recommended default.
+//   LIST_DIRECTORY   = list each folder once and match expected filenames in memory.
+//   AUTO             = try LIST_DIRECTORY first; fallback to GROUPED_PER_FILE on
+//                      listing timeout, permission denied, or OS error.
+//
 // business_date:
 //   "AUTO"       = calculate the business date from today's date and date_rule
 //   "YYYY-MM-DD" = use a manual business date, for example "2026-07-31"
@@ -60,6 +73,8 @@
 {
   "check_interval_seconds": 10,
   "aggregation_window_seconds": 3,
+  "directory_listing_timeout_seconds": 5,
+  "scan_strategy": "GROUPED_PER_FILE",
   "business_date": "AUTO",
   "date_rule": "LAST_DAY_PREVIOUS_MONTH",
   "feeds": [

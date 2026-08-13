@@ -67,6 +67,8 @@ Required runtime fields:
 {
   "check_interval_seconds": 300,
   "aggregation_window_seconds": 3,
+  "directory_listing_timeout_seconds": 5,
+  "scan_strategy": "GROUPED_PER_FILE",
   "business_date": "AUTO",
   "date_rule": "LAST_DAY_PREVIOUS_MONTH",
   "feeds": [
@@ -101,7 +103,31 @@ Recommended default: `3`.
 
 Use `0` to disable the additional aggregation wait.
 
-### 5.3 `business_date`
+### 5.3 `directory_listing_timeout_seconds`
+
+Positive integer.
+
+For each resolved folder in one scan pass, the monitor first tries to list files once and match expected filenames in memory. If listing that folder takes longer than this value, the monitor falls back to per-file checks for that folder.
+
+Recommended default: `5`.
+
+This timeout is measured while directory entries are being consumed. A single blocking filesystem call from a network share may still take longer before Python regains control.
+
+### 5.4 `scan_strategy`
+
+String.
+
+Controls how feeds are checked after they are grouped by resolved path.
+
+Supported values:
+
+- `"GROUPED_PER_FILE"`: group feeds by path, check each folder once, then check each expected file with `Path.is_file()`. This is the recommended default because it avoids full directory listing on large or slow network folders.
+- `"LIST_DIRECTORY"`: list each folder once with `Path.iterdir()` and match expected filenames using an in-memory set. If listing fails or times out, this strategy does not fall back for that folder.
+- `"AUTO"`: try `LIST_DIRECTORY` first. If listing fails, is denied, or exceeds `directory_listing_timeout_seconds`, fall back to `GROUPED_PER_FILE` for that folder.
+
+Default: `"GROUPED_PER_FILE"`.
+
+### 5.5 `business_date`
 
 String.
 
@@ -112,7 +138,7 @@ Supported values:
 
 Manual mode must use hyphen format: `YYYY-MM-DD`.
 
-### 5.4 `date_rule`
+### 5.6 `date_rule`
 
 String.
 
@@ -131,7 +157,7 @@ Examples:
 | 2026-09-03 | LAST_DAY_PREVIOUS_MONTH | 2026-08-31 |
 | 2026-03-31 | SAME_DAY_PREVIOUS_MONTH | 2026-02-28 |
 
-### 5.5 `feeds`
+### 5.7 `feeds`
 
 Non-empty list.
 
@@ -205,6 +231,7 @@ Each monitoring cycle:
 4. If no feeds are ready, skip notification and render the dashboard.
 5. If at least one feed is ready, wait `aggregation_window_seconds`.
 6. Scan waiting feeds one more time and add newly ready feeds to the same batch.
+   Feeds already collected in the first scan must be skipped during this second scan.
 7. Sort the batch by matched filename for predictable notification output.
 8. Update all feeds in the batch with the same `ready_time`.
 9. Mark all feeds in the batch as `notification_sent`.
@@ -229,15 +256,36 @@ For each waiting feed:
 1. Resolve `path` using business date tokens.
 2. Resolve `filename` using business date tokens.
 3. Build candidate path as `resolved_path / resolved_filename`.
-4. Check that resolved path exists and is a directory.
-5. Check that candidate exists.
-6. Check that candidate is a file.
+4. Group feeds by resolved path for the current scan pass.
+5. Apply the configured `scan_strategy`.
+
+`GROUPED_PER_FILE`:
+
+1. For each resolved folder, check folder readiness once.
+2. For each expected file in that folder, check the candidate with `Path.is_file()`.
+3. Run file stability only for candidate files that exist.
+
+`LIST_DIRECTORY`:
+
+1. For each resolved folder, list files once with `Path.iterdir()`.
+2. Match expected filenames using an in-memory `set[str]`.
+3. Run file stability only for filenames found in the set.
+4. If listing fails, is denied, or times out, log the issue and do not mark files in that folder ready during that scan pass.
+
+`AUTO`:
+
+1. Try `LIST_DIRECTORY`.
+2. If listing succeeds, use in-memory filename matching.
+3. If listing fails, is denied, or exceeds `directory_listing_timeout_seconds`, fall back to `GROUPED_PER_FILE` for that folder.
+
+Within one scan pass, grouped per-file checks should cache directory readiness by resolved path. If many feeds share the same directory, the monitor should check that directory once and reuse the result for the rest of that scan pass.
 
 Only `pathlib.Path` APIs should be used for filesystem detection, including:
 
 - `Path.exists()`
 - `Path.is_dir()`
 - `Path.is_file()`
+- `Path.iterdir()`
 - `Path.stat()`
 
 Missing directories, permission errors, and OS errors are logged as warnings and do not stop the application.
@@ -435,6 +483,8 @@ Logged events:
 - Permission denied warnings
 - OS/file access warnings
 - File still changing
+- Directory listing performance: `Listed N files from PATH in Ns`
+- Directory listing timeout fallback: `Directory listing timed out after Ns for PATH; scanned N entries; falling back to per-file checks`
 - Notification skipped or failed
 - Startup errors
 - Shutdown after all feeds ready
@@ -501,13 +551,13 @@ python3 -m py_compile main.py core/config.py core/dashboard.py core/monitor.py c
 Confirm the real config loads:
 
 ```bash
-python3 -c "from pathlib import Path; from core.config import load_config; c=load_config(Path('config.json')); print(len(c.feeds), c.check_interval_seconds, c.aggregation_window_seconds, c.business_date, c.date_rule)"
+python3 -c "from pathlib import Path; from core.config import load_config; c=load_config(Path('config.json')); print(len(c.feeds), c.check_interval_seconds, c.aggregation_window_seconds, c.directory_listing_timeout_seconds, c.scan_strategy, c.business_date, c.date_rule)"
 ```
 
 Expected output for the current config:
 
 ```text
-12 10 3 AUTO LAST_DAY_PREVIOUS_MONTH
+12 10 3 5 GROUPED_PER_FILE AUTO LAST_DAY_PREVIOUS_MONTH
 ```
 
 Do not use `python3 -m json.tool config.json` for this project config because the file intentionally supports top-level `//` comment lines.
